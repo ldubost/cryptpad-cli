@@ -122,7 +122,7 @@ function createShell(filesystemAdapter, options = {}) {
                     try {
                         const drive = env.fs.getDriveObject ? env.fs.getDriveObject() : null;
                         if (drive) {
-                            const container = env.fs.currentFolder || (drive && drive.root);
+                            const container = env.fs.getCurrentContainer ? env.fs.getCurrentContainer() : (drive && drive.root);
                             if (container) {
                                 const completions = [];
                                 
@@ -133,28 +133,41 @@ function createShell(filesystemAdapter, options = {}) {
                                     }
                                 }
                                 
-                                // Add document titles from filesData
+                                // Add document titles from filesData (only for items in current folder)
                                 const filesData = drive && drive.filesData;
                                 if (filesData) {
-                                    for (const [id, meta] of Object.entries(filesData)) {
+                                    // First, get all document IDs that are in the current folder
+                                    const folderDocumentIds = [];
+                                    for (const [name, value] of Object.entries(container)) {
+                                        if (typeof value !== 'object') {
+                                            folderDocumentIds.push(name);
+                                        }
+                                    }
+                                    
+                                    // Then, for each document in the folder, check if its title matches
+                                    for (const id of folderDocumentIds) {
+                                        const meta = filesData[id];
                                         if (meta && meta.title && meta.title.startsWith(partial)) {
                                             completions.push(meta.title);
                                         }
                                     }
                                 }
                                 
-                                // Add shared folder titles
-                                const sharedFolders = drive && drive.sharedFolders;
-                                if (sharedFolders) {
-                                    for (const [id, meta] of Object.entries(sharedFolders)) {
-                                        if (id.startsWith(partial)) {
-                                            completions.push(id);
-                                        }
-                                        if (meta && meta.lastTitle && meta.lastTitle.startsWith(partial)) {
-                                            completions.push(meta.lastTitle);
-                                        }
-                                        if (meta && meta.title && meta.title.startsWith(partial)) {
-                                            completions.push(meta.title);
+                                // Add shared folder titles (only at root level)
+                                const isAtRoot = !env.fs.getCurrentContainer || env.fs.getCurrentContainer() === (drive && drive.root);
+                                if (isAtRoot) {
+                                    const sharedFolders = drive && drive.sharedFolders;
+                                    if (sharedFolders) {
+                                        for (const [id, meta] of Object.entries(sharedFolders)) {
+                                            if (id.startsWith(partial)) {
+                                                completions.push(id);
+                                            }
+                                            if (meta && meta.lastTitle && meta.lastTitle.startsWith(partial)) {
+                                                completions.push(meta.lastTitle);
+                                            }
+                                            if (meta && meta.title && meta.title.startsWith(partial)) {
+                                                completions.push(meta.title);
+                                            }
                                         }
                                     }
                                 }
@@ -172,7 +185,7 @@ function createShell(filesystemAdapter, options = {}) {
                     try {
                         const drive = env.fs.getDriveObject ? env.fs.getDriveObject() : null;
                         if (drive) {
-                            const container = env.fs.currentFolder || (drive && drive.root);
+                            const container = env.fs.getCurrentContainer ? env.fs.getCurrentContainer() : (drive && drive.root);
                             if (container) {
                                 const completions = [];
                                 
@@ -183,18 +196,113 @@ function createShell(filesystemAdapter, options = {}) {
                                     }
                                 }
                                 
-                                // Add document titles from filesData (only for documents, not folders)
+                                // Add document titles from filesData (only for documents in current folder)
                                 const filesData = drive && drive.filesData;
                                 if (filesData) {
-                                    for (const [id, meta] of Object.entries(filesData)) {
+                                    // First, get all document IDs that are in the current folder
+                                    const folderDocumentIds = [];
+                                    for (const [name, value] of Object.entries(container)) {
+                                        if (typeof value !== 'object') {
+                                            folderDocumentIds.push(name);
+                                        }
+                                    }
+                                    
+                                    // Then, for each document in the folder, check if its title matches
+                                    for (const id of folderDocumentIds) {
+                                        const meta = filesData[id];
                                         if (meta && meta.title && meta.title.startsWith(partial)) {
-                                            // Check if this ID corresponds to a document (not a folder)
-                                            const containerValue = container[id];
-                                            if (containerValue && typeof containerValue !== 'object') {
+                                            completions.push(meta.title);
+                                        }
+                                    }
+                                }
+                                
+                                return [completions, partial];
+                            }
+                        }
+                    } catch (err) {
+                        // Ignore completion errors
+                    }
+                }
+                
+                // Special completion for mv command
+                if (cmd === 'mv') {
+                    try {
+                        const drive = env.fs.getDriveObject ? env.fs.getDriveObject() : null;
+                        if (drive) {
+                            const container = env.fs.getCurrentContainer ? env.fs.getCurrentContainer() : (drive && drive.root);
+                            if (container) {
+                                const completions = [];
+                                
+                                // For first argument (source), show documents only
+                                if (args.length === 2) {
+                                    // Add document names (non-objects in container)
+                                    for (const [name, value] of Object.entries(container)) {
+                                        if (name.startsWith(partial) && typeof value !== 'object') {
+                                            completions.push(name);
+                                        }
+                                    }
+                                    
+                                    // Add document titles from filesData (only for documents in current folder)
+                                    const filesData = drive && drive.filesData;
+                                    if (filesData) {
+                                        // First, get all document IDs that are in the current folder
+                                        const folderDocumentIds = [];
+                                        for (const [name, value] of Object.entries(container)) {
+                                            if (typeof value !== 'object') {
+                                                folderDocumentIds.push(name);
+                                            }
+                                        }
+                                        
+                                        // Then, for each document in the folder, check if its title matches
+                                        for (const id of folderDocumentIds) {
+                                            const meta = filesData[id];
+                                            if (meta && meta.title && meta.title.startsWith(partial)) {
                                                 completions.push(meta.title);
                                             }
                                         }
                                     }
+                                }
+                                
+                                // For second argument (target), show folders only
+                                if (args.length === 3) {
+                                    // Add folder names (objects in container)
+                                    for (const [name, value] of Object.entries(container)) {
+                                        if (name.startsWith(partial) && typeof value === 'object') {
+                                            completions.push(name);
+                                        }
+                                    }
+                                }
+                                
+                                return [completions, partial];
+                            }
+                        }
+                    } catch (err) {
+                        // Ignore completion errors
+                    }
+                }
+                
+                // Special completion for rename command
+                if (cmd === 'rename') {
+                    try {
+                        const drive = env.fs.getDriveObject ? env.fs.getDriveObject() : null;
+                        if (drive) {
+                            const container = env.fs.getCurrentContainer ? env.fs.getCurrentContainer() : (drive && drive.root);
+                            if (container) {
+                                const completions = [];
+                                
+                                // For first argument (oldName), show folders only
+                                if (args.length === 2) {
+                                    // Add folder names (objects in container)
+                                    for (const [name, value] of Object.entries(container)) {
+                                        if (name.startsWith(partial) && typeof value === 'object') {
+                                            completions.push(name);
+                                        }
+                                    }
+                                }
+                                
+                                // For second argument (newName), no completion (user types new name)
+                                if (args.length === 3) {
+                                    return [[], partial];
                                 }
                                 
                                 return [completions, partial];
@@ -210,7 +318,7 @@ function createShell(filesystemAdapter, options = {}) {
                     try {
                         const drive = env.fs.getDriveObject ? env.fs.getDriveObject() : null;
                         if (drive) {
-                            const container = env.fs.currentFolder || (drive && drive.root);
+                            const container = env.fs.getCurrentContainer ? env.fs.getCurrentContainer() : (drive && drive.root);
                             if (container) {
                                 const completions = [];
                                 

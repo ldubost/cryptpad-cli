@@ -269,10 +269,27 @@ module.exports = function createDriveAdapter(options = {}) {
                     try {
                         let doc = JSON.parse(chainpad.getUserDoc());
                         if (Array.isArray(doc)) {
-                            let parsed =  doc.slice(0,-1);
+                            let parsed = doc.slice(0,-1);
                             return HyperJson.toDOM(parsed).textContent;
                         }
-                        return doc.content;
+                        
+                        // Handle different content types
+                        if (doc && typeof doc === 'object') {
+                            // Check if it's HTML content (contains HTML tags)
+                            const content = doc.content || doc;
+                            if (typeof content === 'string' && (content.includes('<') && content.includes('>'))) {
+                                // It's HTML content, return as-is
+                                return content;
+                            } else if (typeof content === 'object') {
+                                // It's a JSON object, stringify it
+                                return JSON.stringify(content, null, 2);
+                            } else {
+                                // It's a string, return as-is
+                                return content;
+                            }
+                        }
+                        
+                        return doc.content || doc;
                     } catch (e) {
                         console.error(e);
                         return 'ERROR';
@@ -330,10 +347,20 @@ module.exports = function createDriveAdapter(options = {}) {
                 const byTitle = findSharedFolderByTitle(name);
                 if (byTitle) return byTitle.meta;
                 
-                // Try to find by title in filesData
+                // Try to find by title in filesData (only for items in current folder)
                 const filesData = drive && drive.filesData;
                 if (filesData) {
-                    for (const [id, meta] of Object.entries(filesData)) {
+                    // First, get all document IDs that are in the current folder
+                    const folderDocumentIds = [];
+                    for (const [folderName, folderValue] of Object.entries(container)) {
+                        if (typeof folderValue !== 'object') {
+                            folderDocumentIds.push(folderName);
+                        }
+                    }
+                    
+                    // Then, for each document in the folder, check if its title matches
+                    for (const id of folderDocumentIds) {
+                        const meta = filesData[id];
                         if (meta && meta.title === name) {
                             return meta;
                         }
@@ -489,6 +516,114 @@ module.exports = function createDriveAdapter(options = {}) {
             return { path: '/', message: msg };
         },
         makeDir: async () => { throw new Error('Not implemented'); },
+        mv: async (from, source, target) => {
+            // Don't wait for original readyPromise when in shared folder
+            if (currentDriveRt === driveInstances[0]?.rt && !isReady) await readyPromise;
+            const cwd = normalize(from);
+            if (cwd !== '/') throw new Error('Only root-level mv is implemented');
+            if (!source) throw new Error('Usage: mv <source> <target>');
+            if (!target) throw new Error('Usage: mv <source> <target>');
+            
+            const drive = getDriveObject();
+            const container = currentFolder || (drive && drive.root);
+            if (!container) throw new Error('Not found in root');
+            
+            // Find source document
+            let sourceValue;
+            if (Object.prototype.hasOwnProperty.call(container, source)) {
+                sourceValue = container[source];
+            } else {
+                // Try to find by title in filesData (only for documents, not folders)
+                const filesData = drive && drive.filesData;
+                if (filesData) {
+                    for (const [id, meta] of Object.entries(filesData)) {
+                        if (meta && meta.title === source) {
+                            // Check if this ID corresponds to a document (not a folder)
+                            const containerValue = container[id];
+                            if (containerValue && typeof containerValue !== 'object') {
+                                sourceValue = id;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!sourceValue) throw new Error('Source not found');
+            }
+            
+            // Check if source is a document (not a folder)
+            if (sourceValue && typeof sourceValue === 'object') {
+                throw new Error('Cannot move folders');
+            }
+            
+            // Find target folder
+            let targetFolder;
+            if (Object.prototype.hasOwnProperty.call(container, target)) {
+                const targetValue = container[target];
+                if (targetValue && typeof targetValue === 'object') {
+                    targetFolder = targetValue;
+                } else {
+                    throw new Error('Target is not a folder');
+                }
+            } else {
+                throw new Error('Target folder not found');
+            }
+            
+            // Check if target is a standard folder (not shared folder)
+            const sharedFolders = drive && drive.sharedFolders;
+            if (sharedFolders) {
+                for (const [id, meta] of Object.entries(sharedFolders)) {
+                    if (id === target || (meta && (meta.lastTitle === target || meta.title === target))) {
+                        throw new Error('Moving to shared folders is not implemented');
+                    }
+                }
+            }
+            
+            // Move the document: remove from root and add to target folder
+            delete container[source];
+            targetFolder[source] = sourceValue;
+            
+            return { message: `Moved ${source} to ${target}` };
+        },
+        rename: async (from, oldName, newName) => {
+            // Don't wait for original readyPromise when in shared folder
+            if (currentDriveRt === driveInstances[0]?.rt && !isReady) await readyPromise;
+            const cwd = normalize(from);
+            if (cwd !== '/') throw new Error('Only root-level rename is implemented');
+            if (!oldName) throw new Error('Usage: rename <oldName> <newName>');
+            if (!newName) throw new Error('Usage: rename <oldName> <newName>');
+            
+            const drive = getDriveObject();
+            const container = currentFolder || (drive && drive.root);
+            if (!container) throw new Error('Not found in root');
+            
+            // Check if source folder exists
+            if (!Object.prototype.hasOwnProperty.call(container, oldName)) {
+                throw new Error('Source folder not found');
+            }
+            
+            const sourceValue = container[oldName];
+            
+            // Check if source is a folder (object)
+            if (!sourceValue || typeof sourceValue !== 'object') {
+                throw new Error('Source is not a folder');
+            }
+            
+            // Check if target name already exists
+            if (Object.prototype.hasOwnProperty.call(container, newName)) {
+                throw new Error('Target name already exists');
+            }
+            
+            // Rename the folder: remove old name and add new name
+            delete container[oldName];
+            container[newName] = sourceValue;
+            
+            // Update folder stack if we're currently in the renamed folder
+            if (folderStack.length > 0 && folderStack[folderStack.length - 1].name === oldName) {
+                folderStack[folderStack.length - 1].name = newName;
+            }
+            
+            return { message: `Renamed folder ${oldName} to ${newName}` };
+        },
         getPath,
         complete: async (path, partial) => {
             // Don't wait for original readyPromise when in shared folder
@@ -544,6 +679,10 @@ module.exports = function createDriveAdapter(options = {}) {
         driveInstances,
         getDriveObject,
         currentFolder,
+        getCurrentContainer: () => {
+            const drive = getDriveObject();
+            return currentFolder || (drive && drive.root);
+        },
         ready: () => readyPromise,
     };
 };

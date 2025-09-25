@@ -13,6 +13,8 @@ module.exports = function(env) {
         print('  info <name>         Show info for root item');
         print('  cat <name>          Show URL/content for file item');
         print('  cd <path>           Change directory');
+        print('  mv <source> <target> Move document to folder');
+        print('  rename <old> <new>  Rename folder');
         print('  clear               Clear the screen');
         print('  exit                Exit the shell');
     }
@@ -55,18 +57,38 @@ module.exports = function(env) {
         print(text);
     }
 
-    async function cmd_cat(args) {
-        if (!args[0]) throw new Error('Usage: cat <name>');
-        if (typeof fs.cat !== 'function') throw new Error('cat not supported by filesystem');
-        const res = await fs.cat(env.cwd, args[0], print);
-        if (res && res.url) {
-            print(res.url);
-        }
-        if (res && res.content !== undefined) {
-            print('');
-            print(String(res.content));
-        }
+async function cmd_cat(args) {
+    if (!args[0]) throw new Error('Usage: cat <name>');
+    if (typeof fs.cat !== 'function') throw new Error('cat not supported by filesystem');
+    const res = await fs.cat(env.cwd, args[0], print);
+    if (res && res.url) {
+        print(res.url);
     }
+    if (res && res.content !== undefined) {
+        print('');
+        print(String(res.content));
+    }
+}
+
+async function cmd_mv(args) {
+    if (!args[0]) throw new Error('Usage: mv <source> <target>');
+    if (!args[1]) throw new Error('Usage: mv <source> <target>');
+    if (typeof fs.mv !== 'function') throw new Error('mv not supported by filesystem');
+    const res = await fs.mv(env.cwd, args[0], args[1]);
+    if (res && res.message) {
+        print(res.message);
+    }
+}
+
+async function cmd_rename(args) {
+    if (!args[0]) throw new Error('Usage: rename <oldName> <newName>');
+    if (!args[1]) throw new Error('Usage: rename <oldName> <newName>');
+    if (typeof fs.rename !== 'function') throw new Error('rename not supported by filesystem');
+    const res = await fs.rename(env.cwd, args[0], args[1]);
+    if (res && res.message) {
+        print(res.message);
+    }
+}
 
     async function cmd_clear() {
         // ANSI clear screen
@@ -84,6 +106,8 @@ module.exports = function(env) {
         info: cmd_info,
         cat: cmd_cat,
         cd: cmd_cd,
+        mv: cmd_mv,
+        rename: cmd_rename,
         clear: cmd_clear,
         exit: cmd_exit,
     };
