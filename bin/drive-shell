@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+const { createShell } = require('../src/shell');
+const { createMemoryAdapter } = require('../src/fs/memory');
+
+const fs = createMemoryAdapter({
+    '/': {},
+    '/docs': {},
+    '/docs/readme.txt': 'Welcome to drive-shell!\nUse help to see available commands.',
+});
+
+const shell = createShell(fs, { prompt: 'drive> ' });
+shell.start();
+
+
+

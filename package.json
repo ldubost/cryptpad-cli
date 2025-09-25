@@ -6,6 +6,10 @@
   "author": "",
   "type": "commonjs",
   "main": "index.js",
+  "bin": {
+    "drive-shell": "./bin/drive-shell",
+    "drive-cryptpad": "./bin/drive-cryptpad"
+  },
   "dependencies": {
     "chainpad": "^5.2.6",
     "chainpad-crypto": "^0.3.0",

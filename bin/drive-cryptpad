@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+const { getCryptPadDrive } = require('../src/cryptpad/drive');
+const { createShell } = require('../src/shell');
+const createDriveAdapter = require('../src/fs/drive-adapter');
+
+const cpServer = process.env.CP_SERVER || 'freemium.cryptpad.fr';
+const driveUri = process.env.CP_DRIVE_URI || '/drive/#/2/drive/edit/5+9MFiXfG0w8T-g6GDQPefnC/';
+const cpURL = 'https://' + cpServer;
+const driveUrl = cpURL + driveUri;
+const wsURL = 'wss://' + cpServer + '/cryptpad_websocket';
+
+const rt = getCryptPadDrive(driveUrl, wsURL);
+rt.proxy.on('ready', () => {
+    const fs = createDriveAdapter(rt, { serverOrigin: driveUrl });
+    const shell = createShell(fs, { prompt: 'cp> ' });
+    shell.start();
+}).on('error', (info) => {
+    console.error('ERROR');
+    console.error(info);
+});
+
+
