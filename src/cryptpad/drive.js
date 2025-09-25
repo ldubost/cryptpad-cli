@@ -43,14 +43,6 @@ const getCryptPadDrive = (driveUrl, wsUrl) => {
 
 
     const rt = Listmap.create(config);
-    rt.proxy.on('ready', () => {
-        console.log('READY');
-        console.log(rt.proxy);
-    }).on('error', (info) => {
-        console.error('ERROR');
-        console.error(info);
-    });
-
     return rt;
 }
 

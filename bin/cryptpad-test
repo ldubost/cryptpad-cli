@@ -1,9 +1,11 @@
+
 const { getCryptPadDrive } = require('../src/cryptpad/drive');
 
 const driveUrl = 'https://freemium.cryptpad.fr/drive/#/2/drive/edit/5+9MFiXfG0w8T-g6GDQPefnC/';
 const wsURL = 'wss://freemium.cryptpad.fr/cryptpad_websocket'
 
 const rt = getCryptPadDrive(driveUrl, wsURL);
+
 rt.proxy.on('ready', () => {
     console.log('READY');
     console.log(rt.proxy);
@@ -11,4 +13,3 @@ rt.proxy.on('ready', () => {
     console.error('ERROR');
     console.error(info);
 });
-

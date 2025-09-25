@@ -14,6 +14,8 @@
     "chainpad": "^5.2.6",
     "chainpad-crypto": "^0.3.0",
     "chainpad-listmap": "^1.2.0",
+    "hyper-json": "^1.5.0",
+    "jsdom": "^27.0.0",
     "json.sortify": "github:cryptpad/JSON.sortify",
     "ws": "^8.17.1"
   },

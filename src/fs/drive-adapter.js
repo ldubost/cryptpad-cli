@@ -2,6 +2,10 @@
 // Currently implements list('/') by reading from rt.proxy.drive.root
 const { getPad } = require('../cryptpad/pad');
 const { getCryptPadDrive } = require('../cryptpad/drive');
+const HyperJson = require('hyper-json');
+const { JSDOM } = require('jsdom');
+const dom = new JSDOM();
+                
 
 function normalize(path) {
     if (!path) return '/';
@@ -231,23 +235,26 @@ module.exports = function createDriveAdapter(options = {}) {
             try { fullUrl = new URL(href, currentBaseOrigin || undefined).toString(); } catch (_) { fullUrl = (currentBaseOrigin || '').replace(/\/?$/, '/') + String(href).replace(/^\//, ''); }
             // Use provided websocket URL from adapter options
             const wsUrl = wsURL;
-            print("URL: " + fullUrl);
+            // print("URL: " + fullUrl);
             return await new Promise((resolve) => {
                 let chainpad;
                 let resolved = false;
                 let rtPad;
 
+
+                global.document = dom.window.document;
+
                 const safeParseDoc = () => {
+                    if (!chainpad) { return; }
                     try {
-                        const doc = chainpad && typeof chainpad.getUserDoc === 'function' ? chainpad.getUserDoc() : '';
-                        if (!doc) return null;
-                        try {
-                            const parsed = JSON.parse(doc);
-                            return parsed && parsed.content !== undefined ? parsed.content : doc;
-                        } catch (_) {
-                            return doc;
+                        let doc = JSON.parse(chainpad.getUserDoc());
+                        if (Array.isArray(doc)) {
+                            let parsed =  doc.slice(0,-1);
+                            return HyperJson.toDOM(parsed).textContent;
                         }
-                    } catch (_) {
+                        return doc.content;
+                    } catch (e) {
+                        console.error(e);
                         return 'ERROR';
                     }
                 };
@@ -256,7 +263,6 @@ module.exports = function createDriveAdapter(options = {}) {
                     if (resolved) return;
                     const content = safeParseDoc();
                     if (content && content !== '') {
-                        print("Content is: " + content);
                         resolved = true;
                         try { if (rtPad && typeof rtPad.stop === 'function') rtPad.stop(); } catch (_) {}
                         resolve({ url: fullUrl, content });
