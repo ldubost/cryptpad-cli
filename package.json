@@ -1,0 +1,21 @@
+{
+  "name": "drive-api",
+  "version": "0.0.1",
+  "description": "",
+  "license": "MIT",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "dependencies": {
+    "chainpad": "^5.2.6",
+    "chainpad-crypto": "^0.3.0",
+    "chainpad-listmap": "^1.2.0",
+    "json.sortify": "github:cryptpad/JSON.sortify",
+    "ws": "^8.17.1"
+  },
+  "overrides": {
+    "minimist": "~1.2.3",
+    "minimatch": "~3.1.2",
+    "ws": "^8.17.1"
+  }
+}
