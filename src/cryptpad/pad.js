@@ -21,7 +21,7 @@ const getPad = (padUrl, wsUrl, cfg) => {
     const getKeys = url => {
         const u = new URL(url);
         let key = u.hash.split('/')[4];
-        return CpCrypto.createEditCryptor2(key);
+        return CpCrypto.createViewCryptor2(key);
     };
 
     const base64ToHex = (b64String) => {
