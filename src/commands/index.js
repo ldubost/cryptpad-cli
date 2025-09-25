@@ -11,6 +11,7 @@ module.exports = function(env) {
         print('  pwd                 Print working directory');
         print('  ls [path]           List directory');
         print('  info <name>         Show info for root item');
+        print('  cat <name>          Show URL/content for file item');
         print('  cd <path>           Change directory');
         print('  clear               Clear the screen');
         print('  exit                Exit the shell');
@@ -54,6 +55,19 @@ module.exports = function(env) {
         print(text);
     }
 
+    async function cmd_cat(args) {
+        if (!args[0]) throw new Error('Usage: cat <name>');
+        if (typeof fs.cat !== 'function') throw new Error('cat not supported by filesystem');
+        const res = await fs.cat(env.cwd, args[0], print);
+        if (res && res.url) {
+            print(res.url);
+        }
+        if (res && res.content !== undefined) {
+            print('');
+            print(String(res.content));
+        }
+    }
+
     async function cmd_clear() {
         // ANSI clear screen
         print('\x1Bc');
@@ -68,6 +82,7 @@ module.exports = function(env) {
         pwd: cmd_pwd,
         ls: cmd_ls,
         info: cmd_info,
+        cat: cmd_cat,
         cd: cmd_cd,
         clear: cmd_clear,
         exit: cmd_exit,

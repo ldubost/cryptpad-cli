@@ -1,5 +1,6 @@
 // CryptPad drive adapter exposing the same interface as memory adapter
 // Currently implements list('/') by reading from rt.proxy.drive.root
+const { getPad } = require('../cryptpad/pad');
 
 function normalize(path) {
     if (!path) return '/';
@@ -21,7 +22,15 @@ function join(a, b) {
 }
 
 module.exports = function createDriveAdapter(rt, options = {}) {
-    const serverOrigin = options.serverOrigin || '';
+    // Derive a clean origin (protocol + host[:port]) from provided serverOrigin or URL
+    let baseOrigin = '';
+    if (options && options.serverOrigin) {
+        try {
+            baseOrigin = new URL(options.serverOrigin).origin;
+        } catch (_) {
+            try { baseOrigin = new URL('https://' + String(options.serverOrigin).replace(/^https?:\/\//, '')).origin; } catch (_) { baseOrigin = String(options.serverOrigin); }
+        }
+    }
     let folderStack = []; // stack of nested standard folders (objects)
     let currentFolder = null; // mirror top of stack for quick access
 
@@ -113,6 +122,87 @@ module.exports = function createDriveAdapter(rt, options = {}) {
                 return title ? (left + '- ' + title) : name;
             });
         },
+        cat: async (from, name, print) => {
+            const cwd = normalize(from);
+            if (cwd !== '/') throw new Error('Only root-level cat is implemented');
+            if (!name) throw new Error('Usage: cat <name>');
+            const drive = rt && rt.proxy && rt.proxy.drive;
+            const container = (currentFolder) || (drive && drive.root);
+            if (!container) throw new Error('Not found');
+            if (!Object.prototype.hasOwnProperty.call(container, name)) throw new Error('Not found');
+            const value = container[name];
+            if (value && typeof value === 'object') throw new Error('Not a file');
+            const resolved = resolveMetaFromId(value);
+            if (!resolved) throw new Error('Not found');
+            if (resolved.kind !== 'file') throw new Error('Not a file');
+            const href = resolved.meta && resolved.meta.href ? resolved.meta.href : '';
+            let fullUrl = href;
+            try { fullUrl = new URL(href, baseOrigin || undefined).toString(); } catch (_) { fullUrl = (baseOrigin || '').replace(/\/?$/, '/') + String(href).replace(/^\//, ''); }
+
+            // Build websocket URL from baseOrigin
+            let wsUrl;
+            try {
+                const u = new URL(baseOrigin || fullUrl);
+                const isHttps = u.protocol === 'https:';
+                wsUrl = (isHttps ? 'wss://' : 'ws://') + u.host + '/cryptpad_websocket';
+            } catch (_) {
+                wsUrl = 'wss://' + (new URL(fullUrl).host) + '/cryptpad_websocket';
+            }
+            return await new Promise((resolve) => {
+                let chainpad;
+                let resolved = false;
+                let rtPad;
+
+                const safeParseDoc = () => {
+                    try {
+                        const doc = chainpad && typeof chainpad.getUserDoc === 'function' ? chainpad.getUserDoc() : '';
+                        if (!doc) return null;
+                        try {
+                            const parsed = JSON.parse(doc);
+                            return parsed && parsed.content !== undefined ? parsed.content : doc;
+                        } catch (_) {
+                            return doc;
+                        }
+                    } catch (_) {
+                        return 'ERROR';
+                    }
+                };
+
+                const tryResolve = () => {
+                    if (resolved) return;
+                    const content = safeParseDoc();
+                    if (content && content !== '') {
+                        print("Content is: " + content);
+                        resolved = true;
+                        try { if (rtPad && typeof rtPad.stop === 'function') rtPad.stop(); } catch (_) {}
+                        resolve({ url: fullUrl, content });
+                    }
+                };
+
+                const onReady = (info) => {
+                    chainpad = info.realtime;
+                    tryResolve();
+                };
+
+                rtPad = getPad(fullUrl, wsUrl, { onReady });
+
+                // Poll briefly in case onRemote is not emitted promptly
+                const poll = setInterval(() => {
+                    tryResolve();
+                    if (resolved) clearInterval(poll);
+                }, 300);
+
+                // Timeout fallback
+                setTimeout(() => {
+                    if (!resolved) {
+                        clearInterval(poll);
+                        try { if (rtPad && typeof rtPad.stop === 'function') rtPad.stop(); } catch (_) {}
+                        resolve({ url: fullUrl });
+                        resolved = true;
+                    }
+                }, 20000);
+            });
+        },
         info: async (from, name) => {
             const cwd = normalize(from);
             if (cwd !== '/') throw new Error('Only root info is implemented');
@@ -187,11 +277,7 @@ module.exports = function createDriveAdapter(rt, options = {}) {
                             const title = byTitle.meta && (byTitle.meta.lastTitle || byTitle.meta.title) || seg;
                             const href = byTitle.meta && byTitle.meta.href ? byTitle.meta.href : '';
                             let fullUrl = href;
-                            try {
-                                fullUrl = new URL(href, serverOrigin || undefined).toString();
-                            } catch (_) {
-                                fullUrl = (serverOrigin || '').replace(/\/?$/, '/') + href.replace(/^\//, '');
-                            }
+                            try { fullUrl = new URL(href, baseOrigin || undefined).toString(); } catch (_) { fullUrl = (baseOrigin || '').replace(/\/?$/, '/') + href.replace(/^\//, ''); }
                             return { path: '/', message: 'Changed folder to ' + title + '\nURL: ' + fullUrl };
                         }
                     }
@@ -214,11 +300,7 @@ module.exports = function createDriveAdapter(rt, options = {}) {
                         const title = (resolved.meta && (resolved.meta.lastTitle || resolved.meta.title)) || seg;
                         const href = resolved.meta && resolved.meta.href ? resolved.meta.href : '';
                         let fullUrl = href;
-                        try {
-                            fullUrl = new URL(href, serverOrigin || undefined).toString();
-                        } catch (_) {
-                            fullUrl = (serverOrigin || '').replace(/\/?$/, '/') + href.replace(/^\//, '');
-                        }
+                        try { fullUrl = new URL(href, baseOrigin || undefined).toString(); } catch (_) { fullUrl = (baseOrigin || '').replace(/\/?$/, '/') + href.replace(/^\//, ''); }
                         return { path: '/', message: 'Changed folder to ' + title + '\nURL: ' + fullUrl };
                     }
                     // files/documents cannot be navigated into
