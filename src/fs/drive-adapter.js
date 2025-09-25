@@ -223,8 +223,28 @@ module.exports = function createDriveAdapter(options = {}) {
             const drive = getDriveObject();
             const container = (currentFolder) || (drive && drive.root);
             if (!container) throw new Error('Not found');
-            if (!Object.prototype.hasOwnProperty.call(container, name)) throw new Error('Not found');
-            const value = container[name];
+            
+            let value;
+            if (Object.prototype.hasOwnProperty.call(container, name)) {
+                value = container[name];
+            } else {
+                // Try to find by title in filesData (only for documents, not folders)
+                const filesData = drive && drive.filesData;
+                if (filesData) {
+                    for (const [id, meta] of Object.entries(filesData)) {
+                        if (meta && meta.title === name) {
+                            // Check if this ID corresponds to a document (not a folder)
+                            // by checking if it's not an object in the container
+                            const containerValue = container[id];
+                            if (containerValue && typeof containerValue !== 'object') {
+                                value = id;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!value) throw new Error('Not found');
+            }
             if (value && typeof value === 'object') throw new Error('Not a file');
             const resolved = resolveMetaFromId(value);
             if (!resolved) throw new Error('Not found');
@@ -306,8 +326,20 @@ module.exports = function createDriveAdapter(options = {}) {
             if (Object.prototype.hasOwnProperty.call(container, name)) {
                 value = container[name];
             } else {
+                // Try to find by title in shared folders
                 const byTitle = findSharedFolderByTitle(name);
                 if (byTitle) return byTitle.meta;
+                
+                // Try to find by title in filesData
+                const filesData = drive && drive.filesData;
+                if (filesData) {
+                    for (const [id, meta] of Object.entries(filesData)) {
+                        if (meta && meta.title === name) {
+                            return meta;
+                        }
+                    }
+                }
+                
                 throw new Error('Not found in root');
             }
             if (value && typeof value === 'object') return value;
@@ -458,8 +490,60 @@ module.exports = function createDriveAdapter(options = {}) {
         },
         makeDir: async () => { throw new Error('Not implemented'); },
         getPath,
+        complete: async (path, partial) => {
+            // Don't wait for original readyPromise when in shared folder
+            if (currentDriveRt === driveInstances[0]?.rt && !isReady) await readyPromise;
+            const p = normalize(path);
+            if (p !== '/') return [];
+            
+            const drive = getDriveObject();
+            const container = currentFolder || (drive && drive.root);
+            if (!container) return [];
+            
+            const names = Object.keys(container);
+            return names.filter(name => name.startsWith(partial));
+        },
+        completeCd: async (path, partial) => {
+            // Don't wait for original readyPromise when in shared folder
+            if (currentDriveRt === driveInstances[0]?.rt && !isReady) await readyPromise;
+            const p = normalize(path);
+            if (p !== '/') return [];
+            
+            const drive = getDriveObject();
+            const container = currentFolder || (drive && drive.root);
+            if (!container) return [];
+            
+            const completions = [];
+            
+            // Add standard folders (objects in container)
+            for (const [name, value] of Object.entries(container)) {
+                if (name.startsWith(partial)) {
+                    completions.push(name);
+                }
+            }
+            
+            // Add shared folders by ID and title
+            const sharedFolders = drive && drive.sharedFolders;
+            if (sharedFolders) {
+                for (const [id, meta] of Object.entries(sharedFolders)) {
+                    if (id.startsWith(partial)) {
+                        completions.push(id);
+                    }
+                    if (meta && meta.lastTitle && meta.lastTitle.startsWith(partial)) {
+                        completions.push(meta.lastTitle);
+                    }
+                    if (meta && meta.title && meta.title.startsWith(partial)) {
+                        completions.push(meta.title);
+                    }
+                }
+            }
+            
+            return completions;
+        },
         findRtByUrl,
         driveInstances,
+        getDriveObject,
+        currentFolder,
         ready: () => readyPromise,
     };
 };
