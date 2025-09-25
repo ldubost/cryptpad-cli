@@ -1,6 +1,7 @@
 // CryptPad drive adapter exposing the same interface as memory adapter
 // Currently implements list('/') by reading from rt.proxy.drive.root
 const { getPad } = require('../cryptpad/pad');
+const { getCryptPadDrive } = require('../cryptpad/drive');
 
 function normalize(path) {
     if (!path) return '/';
@@ -21,34 +22,91 @@ function join(a, b) {
     return normalize(a + '/' + b);
 }
 
-module.exports = function createDriveAdapter(rt, options = {}) {
+module.exports = function createDriveAdapter(options = {}) {
+    const { driveUrl, wsURL, serverOrigin } = options;
+    let currentDriveRt = getCryptPadDrive(driveUrl, wsURL);
+    const driveInstances = [{ url: driveUrl, rt: currentDriveRt }];
+    let isReady = false;
+    const readyPromise = new Promise((resolve, reject) => {
+        currentDriveRt.proxy.on('ready', () => { isReady = true; resolve(); })
+               .on('error', (info) => { reject(info); });
+    });
+
     // Derive a clean origin (protocol + host[:port]) from provided serverOrigin or URL
     let baseOrigin = '';
-    if (options && options.serverOrigin) {
+    if (serverOrigin) {
         try {
-            baseOrigin = new URL(options.serverOrigin).origin;
+            baseOrigin = new URL(serverOrigin).origin;
         } catch (_) {
-            try { baseOrigin = new URL('https://' + String(options.serverOrigin).replace(/^https?:\/\//, '')).origin; } catch (_) { baseOrigin = String(options.serverOrigin); }
+            try { baseOrigin = new URL('https://' + String(serverOrigin).replace(/^https?:\/\//, '')).origin; } catch (_) { baseOrigin = String(serverOrigin); }
         }
     }
     let folderStack = []; // stack of nested standard folders (objects)
     let currentFolder = null; // mirror top of stack for quick access
 
     function getRootEntries() {
-        const container = (currentFolder) || (rt && rt.proxy && rt.proxy.drive && rt.proxy.drive.root);
+        const container = (currentFolder) || (currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy.drive && currentDriveRt.proxy.drive.root);
         if (!container) return [];
         return Object.keys(container).sort();
     }
 
     function getPath() {
-        if (!folderStack.length) return '/';
-        // folderStack can be array of nodes or { name, node }. Normalize names if present.
-        const names = folderStack.map(item => item && item.name ? item.name : '(folder)');
-        return '/' + names.join('/');
+        // Build path with color coding
+        const BLUE = '\x1b[34m';
+        const BRIGHT_BLUE = '\x1b[94m';
+        const RESET = '\x1b[0m';
+        
+        // Check if we're in a shared folder by comparing currentDriveRt with the original
+        const isInSharedFolder = currentDriveRt !== driveInstances[0]?.rt;
+        
+        let path = BRIGHT_BLUE + 'Home' + RESET;
+        
+        if (isInSharedFolder) {
+            // Find which shared folder we're in and get its name from the original drive
+            const sharedInstance = driveInstances.find(inst => inst.rt === currentDriveRt && inst !== driveInstances[0]);
+            if (sharedInstance) {
+                // Try to find the shared folder name from the original drive's sharedFolders
+                const originalDrive = driveInstances[0].rt && driveInstances[0].rt.proxy && driveInstances[0].rt.proxy.drive;
+                const sharedFolders = originalDrive && originalDrive.sharedFolders;
+                let folderName = 'shared';
+                
+                if (sharedFolders) {
+                    // Find the shared folder by matching the URL
+                    for (const [id, meta] of Object.entries(sharedFolders)) {
+                        if (meta && meta.href) {
+                            const href = meta.href;
+                            let fullUrl = href;
+                            try { 
+                                fullUrl = new URL(href, baseOrigin || undefined).toString(); 
+                            } catch (_) { 
+                                fullUrl = (baseOrigin || '').replace(/\/?$/, '/') + href.replace(/^\//, ''); 
+                            }
+                            if (fullUrl === sharedInstance.url) {
+                                folderName = (meta.lastTitle || meta.title || 'shared');
+                                break;
+                            }
+                        }
+                    }
+                }
+                path += ' > ' + BRIGHT_BLUE + folderName + RESET;
+            } else {
+                path += ' > ' + BRIGHT_BLUE + 'shared' + RESET;
+            }
+        }
+        
+        if (folderStack.length > 0) {
+            const names = folderStack.map(item => {
+                const name = item && item.name ? item.name : '(folder)';
+                return BRIGHT_BLUE + name + RESET;
+            });
+            path += ' > ' + names.join(' > ');
+        }
+        
+        return path;
     }
 
     function resolveMetaFromId(id) {
-        const drive = rt && rt.proxy && rt.proxy.drive;
+        const drive = currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy.drive;
         if (!drive) return null;
         const key = String(id);
         const filesData = drive.filesData || {};
@@ -63,7 +121,7 @@ module.exports = function createDriveAdapter(rt, options = {}) {
     }
 
     function findSharedFolderByTitle(title) {
-        const drive = rt && rt.proxy && rt.proxy.drive;
+        const drive = currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy.drive;
         const sharedFolders = drive && drive.sharedFolders;
         if (!sharedFolders) return null;
         const entries = Object.entries(sharedFolders);
@@ -74,24 +132,32 @@ module.exports = function createDriveAdapter(rt, options = {}) {
         return null;
     }
 
+    function findRtByUrl(url) {
+        const found = driveInstances.find(inst => inst.url === url);
+        return found ? found.rt : null;
+    }
+
     return {
         normalize,
         join,
         isSubPath: () => false,
         stat: async (path) => {
+            if (!isReady) await readyPromise;
             const p = normalize(path);
             if (p === '/') return { type: 'dir' };
             return null; // not implemented yet
         },
         list: async (path) => {
+            if (!isReady) await readyPromise;
             const p = normalize(path);
             if (p !== '/') throw new Error('Only root listing is implemented');
             return getRootEntries();
         },
         listDisplay: async (path) => {
+            if (!isReady) await readyPromise;
             const p = normalize(path);
             if (p !== '/') throw new Error('Only root listing is implemented');
-            const drive = rt && rt.proxy && rt.proxy.drive;
+            const drive = currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy.drive;
             const container = currentFolder || (drive && drive.root);
             const filesData = drive && drive.filesData;
             const names = Object.keys(container || {}).sort();
@@ -126,7 +192,7 @@ module.exports = function createDriveAdapter(rt, options = {}) {
             const cwd = normalize(from);
             if (cwd !== '/') throw new Error('Only root-level cat is implemented');
             if (!name) throw new Error('Usage: cat <name>');
-            const drive = rt && rt.proxy && rt.proxy.drive;
+            const drive = currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy.drive;
             const container = (currentFolder) || (drive && drive.root);
             if (!container) throw new Error('Not found');
             if (!Object.prototype.hasOwnProperty.call(container, name)) throw new Error('Not found');
@@ -139,15 +205,8 @@ module.exports = function createDriveAdapter(rt, options = {}) {
             let fullUrl = href;
             try { fullUrl = new URL(href, baseOrigin || undefined).toString(); } catch (_) { fullUrl = (baseOrigin || '').replace(/\/?$/, '/') + String(href).replace(/^\//, ''); }
 
-            // Build websocket URL from baseOrigin
-            let wsUrl;
-            try {
-                const u = new URL(baseOrigin || fullUrl);
-                const isHttps = u.protocol === 'https:';
-                wsUrl = (isHttps ? 'wss://' : 'ws://') + u.host + '/cryptpad_websocket';
-            } catch (_) {
-                wsUrl = 'wss://' + (new URL(fullUrl).host) + '/cryptpad_websocket';
-            }
+            // Use provided websocket URL from adapter options
+            const wsUrl = wsURL;
             return await new Promise((resolve) => {
                 let chainpad;
                 let resolved = false;
@@ -204,10 +263,11 @@ module.exports = function createDriveAdapter(rt, options = {}) {
             });
         },
         info: async (from, name) => {
+            if (!isReady) await readyPromise;
             const cwd = normalize(from);
             if (cwd !== '/') throw new Error('Only root info is implemented');
             if (!name) throw new Error('Usage: info <name>');
-            const drive = rt && rt.proxy && rt.proxy.drive;
+            const drive = currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy.drive;
             const container = currentFolder || (drive && drive.root);
             if (!container) throw new Error('Not found in root');
             let value;
@@ -225,11 +285,14 @@ module.exports = function createDriveAdapter(rt, options = {}) {
         },
         readFile: async () => { throw new Error('Not implemented'); },
         changeDir: async (from, to) => {
+            if (!isReady) await readyPromise;
             const cwd = normalize(from);
             if (cwd !== '/') throw new Error('Only root directory is supported');
             if (!to) throw new Error('Usage: cd <folder>');
             // Handle special paths
             if (to === '/') {
+                // Switch back to the original drive
+                currentDriveRt = driveInstances[0].rt;
                 folderStack = [];
                 currentFolder = null;
                 return { path: '/', message: 'Changed to root folder' };
@@ -239,10 +302,17 @@ module.exports = function createDriveAdapter(rt, options = {}) {
                     folderStack.pop();
                     currentFolder = folderStack.length ? folderStack[folderStack.length - 1].node : null;
                 }
-                if (!folderStack.length) return { path: '/', message: 'Changed to root folder' };
+                if (!folderStack.length) {
+                    // If we're in a shared folder and go up from root, go back to main drive
+                    if (currentDriveRt !== driveInstances[0].rt) {
+                        currentDriveRt = driveInstances[0].rt;
+                        return { path: '/', message: 'Changed to root folder' };
+                    }
+                    return { path: '/', message: 'Changed to root folder' };
+                }
                 return { path: '/', message: 'Changed folder to ' + (folderStack[folderStack.length - 1].name || '(unknown)') };
             }
-            const drive = rt && rt.proxy && rt.proxy.drive;
+            const drive = currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy.drive;
             if (!drive) throw new Error('Folder does not exist');
 
             // Support multi-segment paths like "A/B/C"
@@ -272,14 +342,34 @@ module.exports = function createDriveAdapter(rt, options = {}) {
                 if (!Object.prototype.hasOwnProperty.call(container, seg)) {
                     // allow shared folder by title only if this is the last segment
                     if (i === segments.length - 1) {
-                        const byTitle = findSharedFolderByTitle(seg);
-                        if (byTitle) {
-                            const title = byTitle.meta && (byTitle.meta.lastTitle || byTitle.meta.title) || seg;
-                            const href = byTitle.meta && byTitle.meta.href ? byTitle.meta.href : '';
-                            let fullUrl = href;
-                            try { fullUrl = new URL(href, baseOrigin || undefined).toString(); } catch (_) { fullUrl = (baseOrigin || '').replace(/\/?$/, '/') + href.replace(/^\//, ''); }
-                            return { path: '/', message: 'Changed folder to ' + title + '\nURL: ' + fullUrl };
-                        }
+                const byTitle = findSharedFolderByTitle(seg);
+                if (byTitle) {
+                    const title = byTitle.meta && (byTitle.meta.lastTitle || byTitle.meta.title) || seg;
+                    const href = byTitle.meta && byTitle.meta.href ? byTitle.meta.href : '';
+                    let fullUrl = href;
+                    try { fullUrl = new URL(href, baseOrigin || undefined).toString(); } catch (_) { fullUrl = (baseOrigin || '').replace(/\/?$/, '/') + href.replace(/^\//, ''); }
+                    
+                    // Check if we already have this drive loaded
+                    let sharedRt = findRtByUrl(fullUrl);
+                    if (!sharedRt) {
+                        // Load the shared folder drive
+                        const sharedWsUrl = wsURL; // Use the same websocket URL
+                        sharedRt = getCryptPadDrive(fullUrl, sharedWsUrl);
+                        driveInstances.push({ url: fullUrl, rt: sharedRt });
+                        
+                        // Wait for the shared folder to be ready
+                        await new Promise((resolve, reject) => {
+                            sharedRt.proxy.on('ready', resolve).on('error', reject);
+                        });
+                    }
+                    
+                    // Switch to the shared folder context
+                    currentDriveRt = sharedRt;
+                    folderStack = []; // Reset folder stack for shared folder
+                    currentFolder = null;
+                    
+                    return { path: '/', message: 'Changed to shared folder: ' + title };
+                }
                     }
                     throw new Error('Folder does not exist');
                 }
@@ -295,13 +385,33 @@ module.exports = function createDriveAdapter(rt, options = {}) {
                     const resolved = resolveMetaFromId(value);
                     if (!resolved) throw new Error('Folder does not exist');
                     if (resolved.kind === 'sharedFolder') {
-                        // Only valid if terminal segment; we don't navigate into shared folders yet
+                        // Only valid if terminal segment; load shared folder drive
                         if (i !== segments.length - 1) throw new Error('Folder does not exist');
                         const title = (resolved.meta && (resolved.meta.lastTitle || resolved.meta.title)) || seg;
                         const href = resolved.meta && resolved.meta.href ? resolved.meta.href : '';
                         let fullUrl = href;
                         try { fullUrl = new URL(href, baseOrigin || undefined).toString(); } catch (_) { fullUrl = (baseOrigin || '').replace(/\/?$/, '/') + href.replace(/^\//, ''); }
-                        return { path: '/', message: 'Changed folder to ' + title + '\nURL: ' + fullUrl };
+                        
+                        // Check if we already have this drive loaded
+                        let sharedRt = findRtByUrl(fullUrl);
+                        if (!sharedRt) {
+                            // Load the shared folder drive
+                            const sharedWsUrl = wsURL; // Use the same websocket URL
+                            sharedRt = getCryptPadDrive(fullUrl, sharedWsUrl);
+                            driveInstances.push({ url: fullUrl, rt: sharedRt });
+                            
+                            // Wait for the shared folder to be ready
+                            await new Promise((resolve, reject) => {
+                                sharedRt.proxy.on('ready', resolve).on('error', reject);
+                            });
+                        }
+                        
+                        // Switch to the shared folder context
+                        currentDriveRt = sharedRt;
+                        folderStack = []; // Reset folder stack for shared folder
+                        currentFolder = null;
+                        
+                        return { path: '/', message: 'Changed to shared folder: ' + title };
                     }
                     // files/documents cannot be navigated into
                     throw new Error('Folder does not exist');
@@ -314,6 +424,9 @@ module.exports = function createDriveAdapter(rt, options = {}) {
         },
         makeDir: async () => { throw new Error('Not implemented'); },
         getPath,
+        findRtByUrl,
+        driveInstances,
+        ready: () => readyPromise,
     };
 };
 

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-const { getCryptPadDrive } = require('../src/cryptpad/drive');
 const { createShell } = require('../src/shell');
 const createDriveAdapter = require('../src/fs/drive-adapter');
 
@@ -9,14 +8,13 @@ const cpURL = 'https://' + cpServer;
 const driveUrl = cpURL + driveUri;
 const wsURL = 'wss://' + cpServer + '/cryptpad_websocket';
 
-const rt = getCryptPadDrive(driveUrl, wsURL);
-rt.proxy.on('ready', () => {
-    const fs = createDriveAdapter(rt, { serverOrigin: driveUrl });
+const fs = createDriveAdapter({ driveUrl, wsURL, serverOrigin: driveUrl });
+fs.ready().then(() => {
     const shell = createShell(fs, { prompt: 'cp> ' });
     shell.start();
-}).on('error', (info) => {
+}).catch((err) => {
     console.error('ERROR');
-    console.error(info);
+    console.error(err);
 });
 
 
