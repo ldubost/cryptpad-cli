@@ -281,6 +281,77 @@ function createShell(filesystemAdapter, options = {}) {
                     }
                 }
                 
+                // Special completion for create command
+                if (cmd === 'create') {
+                    try {
+                        // For first argument (padType), show valid pad types
+                        if (args.length === 2) {
+                            const validPadTypes = ['pad', 'code', 'kanban'];
+                            const completions = validPadTypes.filter(type => type.startsWith(partial));
+                            return [completions, partial];
+                        }
+                        
+                        // For second argument (title), no completion (user types title)
+                        if (args.length === 3) {
+                            return [[], partial];
+                        }
+                    } catch (err) {
+                        // Ignore completion errors
+                    }
+                }
+                
+                // Special completion for download command
+                if (cmd === 'download') {
+                    try {
+                        const drive = env.fs.getDriveObject ? env.fs.getDriveObject() : null;
+                        if (drive) {
+                            const container = env.fs.getCurrentContainer ? env.fs.getCurrentContainer() : (drive && drive.root);
+                            if (container) {
+                                const completions = [];
+                                
+                                // For first argument (name), show documents only
+                                if (args.length === 2) {
+                                    // Add document names (non-objects in container)
+                                    for (const [name, value] of Object.entries(container)) {
+                                        if (name.startsWith(partial) && typeof value !== 'object') {
+                                            completions.push(name);
+                                        }
+                                    }
+                                    
+                                    // Add document titles from filesData (only for documents in current folder)
+                                    const filesData = drive && drive.filesData;
+                                    if (filesData) {
+                                        // First, get all document IDs that are in the current folder
+                                        const folderDocumentIds = [];
+                                        for (const [name, value] of Object.entries(container)) {
+                                            if (typeof value !== 'object') {
+                                                folderDocumentIds.push(name);
+                                            }
+                                        }
+                                        
+                                        // Then, for each document in the folder, check if its title matches
+                                        for (const id of folderDocumentIds) {
+                                            const meta = filesData[id];
+                                            if (meta && meta.title && meta.title.startsWith(partial)) {
+                                                completions.push(meta.title);
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // For second argument (localPath), no completion (user types path)
+                                if (args.length === 3) {
+                                    return [[], partial];
+                                }
+                                
+                                return [completions, partial];
+                            }
+                        }
+                    } catch (err) {
+                        // Ignore completion errors
+                    }
+                }
+                
                 // Special completion for rename command
                 if (cmd === 'rename') {
                     try {

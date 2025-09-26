@@ -15,6 +15,8 @@ module.exports = function(env) {
         print('  cd <path>           Change directory');
         print('  mv <source> <target> Move document to folder');
         print('  rename <old> <new>  Rename folder');
+        print('  download <name> [path] Download pad to local file');
+        print('  create <type> <title> Create new pad');
         print('  clear               Clear the screen');
         print('  exit                Exit the shell');
     }
@@ -90,6 +92,30 @@ async function cmd_rename(args) {
     }
 }
 
+async function cmd_download(args) {
+    if (!args[0]) throw new Error('Usage: download <name> [localPath]');
+    if (typeof fs.download !== 'function') throw new Error('download not supported by filesystem');
+    const res = await fs.download(env.cwd, args[0], args[1]);
+    if (res && res.message) {
+        print(res.message);
+    }
+}
+
+async function cmd_create(args) {
+    if (!args[0]) throw new Error('Usage: create <padType> <title>');
+    if (!args[1]) throw new Error('Usage: create <padType> <title>');
+    if (typeof fs.create !== 'function') throw new Error('create not supported by filesystem');
+    const res = await fs.create(env.cwd, args[0], args[1]);
+    if (res && res.message) {
+        print(res.message);
+    }
+    if (res && res.data) {
+        print('');
+        print('Prepared data:');
+        print(JSON.stringify(res.data, null, 2));
+    }
+}
+
     async function cmd_clear() {
         // ANSI clear screen
         print('\x1Bc');
@@ -108,6 +134,8 @@ async function cmd_rename(args) {
         cd: cmd_cd,
         mv: cmd_mv,
         rename: cmd_rename,
+        download: cmd_download,
+        create: cmd_create,
         clear: cmd_clear,
         exit: cmd_exit,
     };

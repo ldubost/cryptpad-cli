@@ -2,9 +2,11 @@
 // Currently implements list('/') by reading from rt.proxy.drive.root
 const { getPad } = require('../cryptpad/pad');
 const { getCryptPadDrive } = require('../cryptpad/drive');
+const { makePad } = require('../cryptpad/makepad');
 const HyperJson = require('hyper-json');
 const { JSDOM } = require('jsdom');
 const dom = new JSDOM();
+const Crypto = require('node:crypto');
                 
 
 function normalize(path) {
@@ -623,6 +625,327 @@ module.exports = function createDriveAdapter(options = {}) {
             }
             
             return { message: `Renamed folder ${oldName} to ${newName}` };
+        },
+        download: async (from, name, localPath) => {
+            // Don't wait for original readyPromise when in shared folder
+            if (currentDriveRt === driveInstances[0]?.rt && !isReady) await readyPromise;
+            const cwd = normalize(from);
+            if (cwd !== '/') throw new Error('Only root-level download is implemented');
+            if (!name) throw new Error('Usage: download <name> [localPath]');
+            
+            const drive = getDriveObject();
+            const container = currentFolder || (drive && drive.root);
+            if (!container) throw new Error('Not found in root');
+            
+            // Find source document
+            let value;
+            if (Object.prototype.hasOwnProperty.call(container, name)) {
+                value = container[name];
+            } else {
+                // Try to find by title in filesData (only for documents, not folders)
+                const filesData = drive && drive.filesData;
+                if (filesData) {
+                    // First, get all document IDs that are in the current folder
+                    const folderDocumentIds = [];
+                    for (const [folderName, folderValue] of Object.entries(container)) {
+                        if (typeof folderValue !== 'object') {
+                            folderDocumentIds.push(folderName);
+                        }
+                    }
+                    
+                    // Then, for each document in the folder, check if its title matches
+                    for (const id of folderDocumentIds) {
+                        const meta = filesData[id];
+                        if (meta && meta.title === name) {
+                            value = id;
+                            break;
+                        }
+                    }
+                }
+                if (!value) throw new Error('Source not found');
+            }
+            
+            // Check if source is a document (not a folder)
+            if (value && typeof value === 'object') {
+                throw new Error('Cannot download folders');
+            }
+            
+            const resolved = resolveMetaFromId(value);
+            if (!resolved) throw new Error('Not found');
+            if (resolved.kind !== 'file') throw new Error('Not a file');
+            
+            // Get document metadata
+            const meta = resolved.meta;
+            const title = meta && meta.title ? meta.title : name;
+            
+            // Generate local file path
+            const fs = require('fs');
+            const path = require('path');
+            
+            let fileName = localPath || title;
+            
+            // Ensure file has an extension based on content type
+            if (!path.extname(fileName)) {
+                // Try to determine extension from href
+                const href = meta && meta.roHref ? meta.roHref : '';
+                if (href.includes('/presentation/')) {
+                    fileName += '.html';
+                } else if (href.includes('/sheet/')) {
+                    fileName += '.html';
+                } else if (href.includes('/kanban/')) {
+                    fileName += '.html';
+                } else if (href.includes('/whiteboard/')) {
+                    fileName += '.html';
+                } else {
+                    fileName += '.txt';
+                }
+            }
+            
+            // Create directory structure if needed
+            const dir = path.dirname(fileName);
+            if (dir !== '.') {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            
+            // Get the pad content
+            const href = meta && meta.roHref ? meta.roHref : '';
+            let fullUrl = href;
+            const currentBaseOrigin = getBaseOrigin();
+            try { 
+                fullUrl = new URL(href, currentBaseOrigin || undefined).toString(); 
+            } catch (_) { 
+                fullUrl = (currentBaseOrigin || '').replace(/\/?$/, '/') + String(href).replace(/^\//, ''); 
+            }
+            
+            const wsUrl = wsURL;
+            
+            // Download the content
+            const content = await new Promise((resolve, reject) => {
+                let chainpad;
+                let resolved = false;
+                let rtPad;
+                
+                global.document = dom.window.document;
+                
+                const safeParseDoc = () => {
+                    if (!chainpad) { return; }
+                    try {
+                        let doc = JSON.parse(chainpad.getUserDoc());
+                        if (Array.isArray(doc)) {
+                            let parsed = doc.slice(0,-1);
+                            return HyperJson.toDOM(parsed).textContent;
+                        }
+                        
+                        // Handle different content types
+                        if (doc && typeof doc === 'object') {
+                            // Check if it's HTML content (contains HTML tags)
+                            const content = doc.content || doc;
+                            if (typeof content === 'string' && (content.includes('<') && content.includes('>'))) {
+                                // It's HTML content, return as-is
+                                return content;
+                            } else if (typeof content === 'object') {
+                                // It's a JSON object, stringify it
+                                return JSON.stringify(content, null, 2);
+                            } else {
+                                // It's a string, return as-is
+                                return content;
+                            }
+                        }
+                        
+                        return doc.content || doc;
+                    } catch (e) {
+                        console.error(e);
+                        return 'ERROR';
+                    }
+                };
+                
+                const tryResolve = () => {
+                    if (resolved) return;
+                    const content = safeParseDoc();
+                    if (content && content !== '') {
+                        resolved = true;
+                        try { if (rtPad && typeof rtPad.stop === 'function') rtPad.stop(); } catch (_) {}
+                        resolve(content);
+                    }
+                };
+                
+                const onReady = (info) => {
+                    chainpad = info.realtime;
+                    tryResolve();
+                };
+                
+                rtPad = getPad(fullUrl, wsUrl, { onReady });
+                
+                // Poll briefly in case onRemote is not emitted promptly
+                const poll = setInterval(() => {
+                    tryResolve();
+                    if (resolved) clearInterval(poll);
+                }, 300);
+                
+                // Timeout fallback
+                setTimeout(() => {
+                    if (!resolved) {
+                        clearInterval(poll);
+                        try { if (rtPad && typeof rtPad.stop === 'function') rtPad.stop(); } catch (_) {}
+                        reject(new Error('Download timeout'));
+                        resolved = true;
+                    }
+                }, 20000);
+            });
+            
+            // Write content to file
+            fs.writeFileSync(fileName, content, 'utf8');
+            
+            return { message: `Downloaded ${title} to ${fileName}` };
+        },
+        create: async (from, padType, title) => {
+            // Don't wait for original readyPromise when in shared folder
+            if (currentDriveRt === driveInstances[0]?.rt && !isReady) await readyPromise;
+            const cwd = normalize(from);
+            if (cwd !== '/') throw new Error('Only root-level create is implemented');
+            if (!padType) throw new Error('Usage: create <padType> <title>');
+            if (!title) throw new Error('Usage: create <padType> <title>');
+            
+            const drive = getDriveObject();
+            const container = currentFolder || (drive && drive.root);
+            if (!container) throw new Error('Not found in root');
+            
+            // Validate pad type
+            const validPadTypes = ['pad', 'code', 'kanban'];
+            if (!validPadTypes.includes(padType)) {
+                throw new Error(`Invalid pad type. Valid types: ${validPadTypes.join(', ')}`);
+            }
+            
+            // Check if title already exists in current folder
+            for (const [name, value] of Object.entries(container)) {
+                if (typeof value !== 'object') {
+                    // Check if this is a document with the same title
+                    const filesData = drive && drive.filesData;
+                    if (filesData && filesData[name] && filesData[name].title === title) {
+                        throw new Error('A document with this title already exists');
+                    }
+                }
+            }
+            
+            // PLACEHOLDER 1 - Prepare JSON content to add to drive
+            // Generate new document ID using crypto random bytes
+            const newDocumentId = Crypto.randomBytes(16).toString('hex');
+            
+            // Get current user's public key for owners array
+            const currentUser = currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy['cryptpad.username'];
+            const currentUserKey = currentDriveRt && currentDriveRt.proxy && currentDriveRt.proxy.curvePublic;
+            
+            // Generate channel ID (32 character hex string)
+            const generateChannelId = () => {
+                const chars = '0123456789abcdef';
+                let result = '';
+                for (let i = 0; i < 32; i++) {
+                    result += chars[Math.floor(Math.random() * chars.length)];
+                }
+                return result;
+            };
+            
+            const channelId = generateChannelId();
+            const currentTime = Date.now();
+            
+            // Generate random value for link between root and filesData
+            const randomValue = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+            
+            // Create metadata object following the provided structure
+            const newDocumentMeta = {
+                atime: currentTime,
+                channel: channelId,
+                ctime: currentTime,
+                href: `/${padType}/#/2/${padType}/edit/PLACEHOLDER_PAD_ID/`,
+                owners: currentUserKey ? [currentUserKey] : [],
+                roHref: `/${padType}/#/2/${padType}/view/PLACEHOLDER_VIEW_ID/`,
+                title: title
+            };
+            
+            
+            // Create the pad using makePad function
+            const baseOrigin = getBaseOrigin();
+            const wsURL = options.wsURL;
+            
+            // Prepare default content based on pad type
+            let defaultContent;
+            switch (padType) {
+                case 'pad':
+                    defaultContent = '{}';
+                    break;
+                case 'code':
+                    defaultContent = '{"content":"// New code file\\n"}';
+                    break;
+                case 'kanban':
+                    defaultContent = '{"content":"{\\"columns\\":[]}"}';
+                    break;
+                default:
+                    defaultContent = '{"content":""}';
+            }
+            
+            console.log('Creating pad...');
+            
+            // Create the pad and wait for completion
+            return new Promise((resolve, reject) => {
+                makePad(padType, defaultContent, wsURL, baseOrigin, title, (err, padUrl) => {
+                    if (err) {
+                        console.error('Error creating pad:', err);
+                        reject(new Error(`Failed to create pad: ${err}`));
+                        return;
+                    }
+                    
+                    console.log('Pad created successfully:', padUrl);
+                    
+                    // Extract relative paths from the full URLs
+                    const hrefMatch = padUrl.match(/https?:\/\/[^\/]+(.+)/);
+                    let href = hrefMatch ? hrefMatch[1] : padUrl;
+                    // Ensure href ends with a slash
+                    if (!href.endsWith('/')) {
+                        href += '/';
+                    }
+                    
+                    // Use the same URL for both href and roHref
+                    const roHref = href;
+                    
+                    // Update metadata with relative URLs
+                    newDocumentMeta.href = href;
+                    newDocumentMeta.roHref = roHref;
+                    
+                    // Update the drive structure
+                    const drive = getDriveObject();
+                    if (drive && drive.filesData) {
+                        // Add metadata to filesData using the random value as key
+                        drive.filesData[randomValue] = newDocumentMeta;
+                    }
+                    if (container) {
+                        // Add entry to folder using the 32-char hex ID as key and random value as value
+                        container[newDocumentId] = randomValue;
+                    }
+                    
+                    // Display the updated drive JSON structure
+                    console.log('\n=== Updated Drive Structure ===');
+                    console.log('Current folder entries:');
+                    console.log(JSON.stringify(container, null, 2));
+                    console.log('\nFilesData entries:');
+                    console.log(JSON.stringify(drive.filesData, null, 2));
+                    console.log('================================\n');
+                    
+                    resolve({
+                        message: `Created ${padType} pad: "${title}"`,
+                        data: {
+                            documentId: newDocumentId,
+                            metadata: newDocumentMeta,
+                            padUrl: padUrl,
+                            padType: padType,
+                            title: title,
+                            channelId: channelId,
+                            randomValue: randomValue,
+                            currentUser: currentUser,
+                            currentUserKey: currentUserKey
+                        }
+                    });
+                });
+            });
         },
         getPath,
         complete: async (path, partial) => {
